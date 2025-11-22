@@ -23,20 +23,22 @@ const UPDATE_INTERVAL = 100;
 let inApiCall = false;
 
 let sttProviders = {
-    None: null,
-    Browser: BrowserSttProvider,
-    'KoboldCpp': KoboldCppSttProvider,
-    'Whisper (Extras)': WhisperExtrasSttProvider,
-    'OpenAI': OpenAISttProvider,
-    'Whisper (Local)': WhisperLocalSttProvider,
-    Vosk: VoskSttProvider,
-    Streaming: StreamingSttProvider,
+  None: null,
+  Browser: BrowserSttProvider,
+  'KoboldCpp': KoboldCppSttProvider,
+  'Whisper (Extras)': WhisperExtrasSttProvider,
+  'OpenAI': OpenAISttProvider,
+  'Whisper (Local)': WhisperLocalSttProvider,
+  Vosk: VoskSttProvider,
+  Streaming: StreamingSttProvider,
 };
 
 let sttProvider = null;
 let sttProviderName = 'None';
 
 let audioRecording = false;
+let audioTimerSilence = null;
+
 const constraints = { audio: { sampleSize: 16, channelCount: 1, sampleRate: 16000 } };
 let audioChunks = [];
 
@@ -44,283 +46,285 @@ let audioChunks = [];
 let mediaRecorder = null;
 
 async function moduleWorker() {
-    if (sttProviderName != 'Streaming') {
-        return;
-    }
+  if (sttProviderName != 'Streaming') {
+    return;
+  }
 
-    // API is busy
-    if (inApiCall) {
-        return;
-    }
+  // API is busy
+  if (inApiCall) {
+    return;
+  }
 
-    try {
-        inApiCall = true;
-        const userMessageOriginal = await sttProvider.getUserMessage();
-        let userMessageFormatted = userMessageOriginal.trim();
+  try {
+    inApiCall = true;
+    const userMessageOriginal = await sttProvider.getUserMessage();
+    let userMessageFormatted = userMessageOriginal.trim();
 
-        if (userMessageFormatted.length > 0) {
-            console.debug(DEBUG_PREFIX + 'recorded transcript: "' + userMessageFormatted + '"');
+    if (userMessageFormatted.length > 0) {
+      console.debug(DEBUG_PREFIX + 'recorded transcript: "' + userMessageFormatted + '"');
 
-            let userMessageLower = userMessageFormatted.toLowerCase();
-            // remove punctuation
-            let userMessageRaw = userMessageLower.replace(/[^\p{L}\p{M}\s']/gu, '').replace(/\s+/g, ' ');
+      let userMessageLower = userMessageFormatted.toLowerCase();
+      // remove punctuation
+      let userMessageRaw = userMessageLower.replace(/[^\p{L}\p{M}\s']/gu, '').replace(/\s+/g, ' ');
 
-            console.debug(DEBUG_PREFIX + 'raw transcript:', userMessageRaw);
+      console.debug(DEBUG_PREFIX + 'raw transcript:', userMessageRaw);
 
-            // Detect trigger words
-            let messageStart = -1;
+      // Detect trigger words
+      let messageStart = -1;
 
-            if (extension_settings.speech_recognition.Streaming.triggerWordsEnabled) {
+      if (extension_settings.speech_recognition.Streaming.triggerWordsEnabled) {
 
-                for (const triggerWord of extension_settings.speech_recognition.Streaming.triggerWords) {
-                    const triggerPos = userMessageRaw.indexOf(triggerWord.toLowerCase());
+        for (const triggerWord of extension_settings.speech_recognition.Streaming.triggerWords) {
+          const triggerPos = userMessageRaw.indexOf(triggerWord.toLowerCase());
 
-                    // Trigger word not found or not starting message and just a substring
-                    if (triggerPos == -1) { // | (triggerPos > 0 & userMessageFormatted[triggerPos-1] != " ")) {
-                        console.debug(DEBUG_PREFIX + 'trigger word not found: ', triggerWord);
-                    }
-                    else {
-                        console.debug(DEBUG_PREFIX + 'Found trigger word: ', triggerWord, ' at index ', triggerPos);
-                        if (triggerPos < messageStart || messageStart == -1) { // & (triggerPos + triggerWord.length) < userMessageFormatted.length)) {
-                            messageStart = triggerPos; // + triggerWord.length + 1;
+          // Trigger word not found or not starting message and just a substring
+          if (triggerPos == -1) { // | (triggerPos > 0 & userMessageFormatted[triggerPos-1] != " ")) {
+            console.debug(DEBUG_PREFIX + 'trigger word not found: ', triggerWord);
+          }
+          else {
+            console.debug(DEBUG_PREFIX + 'Found trigger word: ', triggerWord, ' at index ', triggerPos);
+            if (triggerPos < messageStart || messageStart == -1) { // & (triggerPos + triggerWord.length) < userMessageFormatted.length)) {
+              messageStart = triggerPos; // + triggerWord.length + 1;
 
-                            if (!extension_settings.speech_recognition.Streaming.triggerWordsIncluded)
-                                messageStart = triggerPos + triggerWord.length + 1;
-                        }
-                    }
-                }
-            } else {
-                messageStart = 0;
+              if (!extension_settings.speech_recognition.Streaming.triggerWordsIncluded)
+                messageStart = triggerPos + triggerWord.length + 1;
             }
-
-            if (messageStart == -1) {
-                console.debug(DEBUG_PREFIX + 'message ignored, no trigger word preceding a message. Voice transcript: "' + userMessageOriginal + '"');
-                if (extension_settings.speech_recognition.Streaming.debug) {
-                    toastr.info(
-                        'No trigger word preceding a message. Voice transcript: "' + userMessageOriginal + '"',
-                        DEBUG_PREFIX + 'message ignored.',
-                        { timeOut: 10000, extendedTimeOut: 20000, preventDuplicates: true },
-                    );
-                }
-            }
-            else {
-                userMessageFormatted = userMessageFormatted.substring(messageStart);
-                // Trim non alphanumeric character from the start
-                messageStart = 0;
-                for (const i of userMessageFormatted) {
-                    if (/^[\p{L}\p{M}]$/iu.test(i)) {
-                        break;
-                    }
-                    messageStart += 1;
-                }
-                userMessageFormatted = userMessageFormatted.substring(messageStart);
-                userMessageFormatted = userMessageFormatted.charAt(0).toUpperCase() + userMessageFormatted.substring(1);
-                processTranscript(userMessageFormatted);
-            }
+          }
         }
-        else {
-            console.debug(DEBUG_PREFIX + 'Received empty transcript, ignored');
+      } else {
+        messageStart = 0;
+      }
+
+      if (messageStart == -1) {
+        console.debug(DEBUG_PREFIX + 'message ignored, no trigger word preceding a message. Voice transcript: "' + userMessageOriginal + '"');
+        if (extension_settings.speech_recognition.Streaming.debug) {
+          toastr.info(
+            'No trigger word preceding a message. Voice transcript: "' + userMessageOriginal + '"',
+            DEBUG_PREFIX + 'message ignored.',
+            { timeOut: 10000, extendedTimeOut: 20000, preventDuplicates: true },
+          );
         }
+      }
+      else {
+        userMessageFormatted = userMessageFormatted.substring(messageStart);
+        // Trim non alphanumeric character from the start
+        messageStart = 0;
+        for (const i of userMessageFormatted) {
+          if (/^[\p{L}\p{M}]$/iu.test(i)) {
+            break;
+          }
+          messageStart += 1;
+        }
+        userMessageFormatted = userMessageFormatted.substring(messageStart);
+        userMessageFormatted = userMessageFormatted.charAt(0).toUpperCase() + userMessageFormatted.substring(1);
+        processTranscript(userMessageFormatted);
+      }
     }
-    catch (error) {
-        console.debug(error);
+    else {
+      console.debug(DEBUG_PREFIX + 'Received empty transcript, ignored');
     }
-    finally {
-        inApiCall = false;
-    }
+  }
+  catch (error) {
+    console.debug(error);
+  }
+  finally {
+    inApiCall = false;
+  }
 }
 
 async function processTranscript(transcript) {
-    try {
-        const transcriptOriginal = transcript;
-        let transcriptFormatted = transcriptOriginal.trim();
+  try {
+    const transcriptOriginal = transcript;
+    let transcriptFormatted = transcriptOriginal.trim();
 
-        if (transcriptFormatted.length > 0) {
-            console.debug(DEBUG_PREFIX + 'recorded transcript: "' + transcriptFormatted + '"');
-            const messageMode = extension_settings.speech_recognition.messageMode;
-            console.debug(DEBUG_PREFIX + 'mode: ' + messageMode);
+    if (transcriptFormatted.length > 0) {
+      console.debug(DEBUG_PREFIX + 'recorded transcript: "' + transcriptFormatted + '"');
+      const messageMode = extension_settings.speech_recognition.messageMode;
+      console.debug(DEBUG_PREFIX + 'mode: ' + messageMode);
 
-            let transcriptLower = transcriptFormatted.toLowerCase();
-            // remove punctuation
-            let transcriptRaw = transcriptLower.replace(/[^\w\s\']|_/g, '').replace(/\s+/g, ' ');
+      let transcriptLower = transcriptFormatted.toLowerCase();
+      // remove punctuation
+      let transcriptRaw = transcriptLower.replace(/[^\w\s\']|_/g, '').replace(/\s+/g, ' ');
 
-            // Check message mapping
-            if (extension_settings.speech_recognition.messageMappingEnabled) {
-                // also check transcriptFormatted for non ascii keys
-                for (const s of [transcriptRaw, transcriptFormatted]) {
-                    console.debug(DEBUG_PREFIX + 'Start searching message mapping into:', s);
-                    for (const key in extension_settings.speech_recognition.messageMapping) {
-                        console.debug(DEBUG_PREFIX + 'message mapping searching: ', key, '=>', extension_settings.speech_recognition.messageMapping[key]);
-                        if (s.includes(key)) {
-                            var message = extension_settings.speech_recognition.messageMapping[key];
-                            console.debug(DEBUG_PREFIX + 'message mapping found: ', key, '=>', extension_settings.speech_recognition.messageMapping[key]);
-                            $('#send_textarea').val(message);
+      // Check message mapping
+      if (extension_settings.speech_recognition.messageMappingEnabled) {
+        // also check transcriptFormatted for non ascii keys
+        for (const s of [transcriptRaw, transcriptFormatted]) {
+          console.debug(DEBUG_PREFIX + 'Start searching message mapping into:', s);
+          for (const key in extension_settings.speech_recognition.messageMapping) {
+            console.debug(DEBUG_PREFIX + 'message mapping searching: ', key, '=>', extension_settings.speech_recognition.messageMapping[key]);
+            if (s.includes(key)) {
+              var message = extension_settings.speech_recognition.messageMapping[key];
+              console.debug(DEBUG_PREFIX + 'message mapping found: ', key, '=>', extension_settings.speech_recognition.messageMapping[key]);
+              $('#send_textarea').val(message);
 
-                            if (messageMode == 'auto_send') await getContext().generate();
-                            return;
-                        }
-                    }
-                }
+              if (messageMode == 'auto_send') await getContext().generate();
+              return;
             }
-
-            console.debug(DEBUG_PREFIX + 'no message mapping found, processing transcript as normal message');
-            const textarea = $('#send_textarea');
-
-            switch (messageMode) {
-                case 'auto_send':
-                    // clear message area to avoid double message
-                    textarea.val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-
-                    await sendMessageAsUser(transcriptFormatted);
-                    await getContext().generate();
-
-                    $('#debug_output').text('<SST-module DEBUG>: message sent: "' + transcriptFormatted + '"');
-                    break;
-
-                case 'replace':
-                    console.debug(DEBUG_PREFIX + 'Replacing message');
-                    textarea.val(transcriptFormatted);
-                    break;
-
-                case 'append':
-                    console.debug(DEBUG_PREFIX + 'Appending message');
-                    const existingMessage = textarea.val();
-                    textarea.val(existingMessage + ' ' + transcriptFormatted);
-                    break;
-
-                default:
-                    console.debug(DEBUG_PREFIX + 'Not supported stt message mode: ' + messageMode);
-
-            }
+          }
         }
-        else {
-            console.debug(DEBUG_PREFIX + 'Empty transcript, do nothing');
-        }
+      }
+
+      console.debug(DEBUG_PREFIX + 'no message mapping found, processing transcript as normal message');
+      const textarea = $('#send_textarea');
+
+      switch (messageMode) {
+        case 'auto_send':
+          // clear message area to avoid double message
+          textarea.val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
+
+          await sendMessageAsUser(transcriptFormatted);
+          await getContext().generate();
+
+          $('#debug_output').text('<SST-module DEBUG>: message sent: "' + transcriptFormatted + '"');
+          break;
+
+        case 'replace':
+          console.debug(DEBUG_PREFIX + 'Replacing message');
+          textarea.val(transcriptFormatted);
+          break;
+
+        case 'append':
+          console.debug(DEBUG_PREFIX + 'Appending message');
+          const existingMessage = textarea.val();
+          textarea.val(existingMessage + ' ' + transcriptFormatted);
+          break;
+
+        default:
+          console.debug(DEBUG_PREFIX + 'Not supported stt message mode: ' + messageMode);
+
+      }
     }
-    catch (error) {
-        console.debug(error);
+    else {
+      console.debug(DEBUG_PREFIX + 'Empty transcript, do nothing');
     }
+  }
+  catch (error) {
+    console.debug(error);
+  }
 }
 
-function loadNavigatorAudioRecording() {
-    if (navigator.mediaDevices.getUserMedia) {
-        console.debug(DEBUG_PREFIX + ' getUserMedia supported by browser.');
-        const micButton = $('#microphone_button');
-        const micClickHandler = function () {
-            micButton.off('click');
-            navigator.mediaDevices.getUserMedia(constraints).then(function (s) {
-                onSuccess(s);
-                if (!audioRecording) {
-                    mediaRecorder.start();
-                    console.debug(DEBUG_PREFIX + 'recorder started, state: ' + mediaRecorder.state);
-                    audioRecording = true;
-                    activateMicIcon(micButton);
-                }
-            }, onError);
-        };
 
-        let onSuccess = function (stream) {
-            const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
-            const audioContext = new AudioContext(!isFirefox ? { sampleRate: 16000 } : null);
-            const source = audioContext.createMediaStreamSource(stream);
-            const settings = {
-                source: source,
-                voice_start: function () {
-                    if (!audioRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
-                        console.debug(DEBUG_PREFIX + 'Voice started');
-                        if (micButton.is(':visible')) {
-                            micButton.trigger('click');
-                        }
-                    }
-                },
-                voice_stop: function () {
-                    if (audioRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
-                        console.debug(DEBUG_PREFIX + 'Voice stopped');
-                        if (micButton.is(':visible')) {
-                            micButton.trigger('click');
-                        }
-                    }
-                },
-            };
+function onGetUserMediaSuccess(stream) {
+  
+  const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+  const audioContext = new AudioContext(!isFirefox ? { sampleRate: 16000 } : null);
+  const source = audioContext.createMediaStreamSource(stream);
+  
+  const settings = {
+    source: source,
+    voice_start: function () {
+      
+      if(audioRecording) {
+        clearVoiceActivationSilenceTimer();
+      } else if (extension_settings.speech_recognition.voiceActivationEnabled) {
+        console.debug(DEBUG_PREFIX + 'Voice started');
+        startRecording();
+      }
+      
+    },
+    voice_stop: function () {
+      
+      if (audioRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
+        console.debug(DEBUG_PREFIX + 'Voice stopped');
+        setVoiceActivationSilenceTimer();
+      }
+      
+    },
+  };
 
-            // only create VAD if voice activation is ON
-            if (extension_settings.speech_recognition.voiceActivationEnabled) {
-                new VAD(settings);
-            }
+  // only create VAD if voice activation is ON
+  if (extension_settings.speech_recognition.voiceActivationEnabled) {
+    new VAD(settings);
+  }
 
-            mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder = new MediaRecorder(stream);
 
-            micButton.off('click').on('click', function () {
-                if (!audioRecording) {
-                    if (!mediaRecorder) {
-                        // go back through the same init path
-                        micButton.off('click');
-                        navigator.mediaDevices.getUserMedia(constraints).then(onSuccess, onError);
-                        return;
-                    }
-                    mediaRecorder.start();
-                    console.debug(DEBUG_PREFIX + mediaRecorder.state);
-                    console.debug(DEBUG_PREFIX + 'recorder started');
-                    audioRecording = true;
-                    activateMicIcon(micButton);
-                }
-                else {
-                    mediaRecorder.stop();
-                    console.debug(DEBUG_PREFIX + mediaRecorder.state);
-                    console.debug(DEBUG_PREFIX + 'recorder stopped');
-                    audioRecording = false;
-                    deactivateMicIcon(micButton);
-                }
-            });
+  micButton
+  .off('click')
+  .on('click', function () {
+    
+    audioRecording
+    ? stopRecording()
+    : startRecording();
+    
+  });
 
-            mediaRecorder.onstop = async function () {
-                console.debug(DEBUG_PREFIX + 'data available after MediaRecorder.stop() called: ', audioChunks.length, ' chunks');
-                const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
-                const arrayBuffer = await audioBlob.arrayBuffer();
+  mediaRecorder.onstop = async function () {
+    console.debug(DEBUG_PREFIX + 'data available after MediaRecorder.stop() called: ', audioChunks.length, ' chunks');
+    const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+    const arrayBuffer = await audioBlob.arrayBuffer();
 
-                // Use AudioContext to decode our array buffer into an audio buffer
-                const audioContext = new AudioContext();
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                audioChunks = [];
+    // Use AudioContext to decode our array buffer into an audio buffer
+    const audioContext = new AudioContext();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    audioChunks = [];
 
-                const wavBlob = await convertAudioBufferToWavBlob(audioBuffer);
-                const transcript = await sttProvider.processAudio(wavBlob);
+    const wavBlob = await convertAudioBufferToWavBlob(audioBuffer);
+    const transcript = await sttProvider.processAudio(wavBlob);
 
-                console.debug(DEBUG_PREFIX + 'received transcript:', transcript);
-                processTranscript(transcript);
+    console.debug(DEBUG_PREFIX + 'received transcript:', transcript);
+    processTranscript(transcript);
 
-                // If voice activation is OFF, release mic after each recording
-                if (!extension_settings.speech_recognition.voiceActivationEnabled) {
-                    try {
-                        mediaRecorder.stream.getTracks().forEach(t => t.stop());
-                    } catch (e) {
-                        console.error(DEBUG_PREFIX + 'error stopping media stream tracks:', e);
-                    }
-                    mediaRecorder = null;
-                    micButton.off('click').on('click', micClickHandler);
-                }
-            };
-
-            mediaRecorder.ondataavailable = function (e) {
-                audioChunks.push(e.data);
-            };
-        };
-
-        let onError = function (err) {
-            console.debug(DEBUG_PREFIX + 'The following error occured: ' + err);
-        };
-
-        // only open mic immediately if voice activation is enabled
-        if (extension_settings.speech_recognition.voiceActivationEnabled) {
-            navigator.mediaDevices.getUserMedia(constraints).then(onSuccess, onError);
-        } else {
-            micButton.off('click').on('click', micClickHandler);
-        }
-
-    } else {
-        console.debug(DEBUG_PREFIX + 'getUserMedia not supported on your browser!');
-        toastr.error('getUserMedia not supported', DEBUG_PREFIX + 'not supported for your browser.', { timeOut: 10000, extendedTimeOut: 20000, preventDuplicates: true });
+    // If voice activation is OFF, release mic after each recording
+    if (!extension_settings.speech_recognition.voiceActivationEnabled) {
+      try {
+        mediaRecorder.stream.getTracks().forEach(t => t.stop());
+      } catch (e) {
+        console.error(DEBUG_PREFIX + 'error stopping media stream tracks:', e);
+      }
+      mediaRecorder = null;
+      micButton.off('click').on('click', micClickHandler);
     }
+  };
+
+  mediaRecorder.ondataavailable = function (e) {
+    audioChunks.push(e.data);
+  };
+  
+};
+
+function onGetUserMediaError(err) {
+  console.debug(DEBUG_PREFIX + 'The following error occured: ' + err);
+};
+
+
+function loadNavigatorAudioRecording() {
+  if (navigator.mediaDevices.getUserMedia) {
+    
+    console.debug(DEBUG_PREFIX + ' getUserMedia supported by browser.');
+    const micButton = $('#microphone_button');
+    const micClickHandler = function () {
+      
+      micButton.off('click');
+      
+      navigator.mediaDevices
+      .getUserMedia(constraints)
+      .then(
+        (s) => {
+          onGetUserMediaSuccess(s);
+          startRecording();
+        },
+        onGetUserMediaError
+      );
+      
+    };
+    
+    // only open mic immediately if voice activation is enabled
+    if (extension_settings.speech_recognition.voiceActivationEnabled) {
+      
+      navigator.mediaDevices
+      .getUserMedia(constraints)
+      .then(onGetUserMediaSuccess, onGetUserMediaError);
+      
+    } else {
+      micButton.off('click').on('click', micClickHandler);
+    }
+
+  } else {
+    console.debug(DEBUG_PREFIX + 'getUserMedia not supported on your browser!');
+    toastr.error('getUserMedia not supported', DEBUG_PREFIX + 'not supported for your browser.', { timeOut: 10000, extendedTimeOut: 20000, preventDuplicates: true });
+  }
 }
 
 //##############//
@@ -328,64 +332,129 @@ function loadNavigatorAudioRecording() {
 //##############//
 
 function loadSttProvider(provider) {
-    //Clear the current config and add new config
-    $('#speech_recognition_provider_settings').html('');
+  //Clear the current config and add new config
+  $('#speech_recognition_provider_settings').html('');
 
-    // Init provider references
-    extension_settings.speech_recognition.currentProvider = provider;
-    sttProviderName = provider;
+  // Init provider references
+  extension_settings.speech_recognition.currentProvider = provider;
+  sttProviderName = provider;
 
-    if (!(sttProviderName in extension_settings.speech_recognition)) {
-        console.warn(`Provider ${sttProviderName} not in Extension Settings, initiatilizing provider in settings`);
-        extension_settings.speech_recognition[sttProviderName] = {};
-    }
+  if (!(sttProviderName in extension_settings.speech_recognition)) {
+    console.warn(`Provider ${sttProviderName} not in Extension Settings, initiatilizing provider in settings`);
+    extension_settings.speech_recognition[sttProviderName] = {};
+  }
 
-    $('#speech_recognition_provider').val(sttProviderName);
+  $('#speech_recognition_provider').val(sttProviderName);
 
-    stopCurrentProvider();
+  stopCurrentProvider();
 
-    if (sttProviderName == 'None') {
-        $('#microphone_button').hide();
-        $('#speech_recognition_message_mode_div').hide();
-        $('#speech_recognition_message_mapping_div').hide();
-        $('#speech_recognition_language_div').hide();
-        $('#speech_recognition_ptt_div').hide();
-        $('#speech_recognition_voice_activation_enabled_div').hide();
-        return;
-    }
+  if (sttProviderName == 'None') {
+    $('#microphone_button').hide();
+    $('#speech_recognition_message_mode_div').hide();
+    $('#speech_recognition_message_mapping_div').hide();
+    $('#speech_recognition_language_div').hide();
+    $('#speech_recognition_ptt_div').hide();
+    $('#speech_recognition_voice_activation_enabled_div').hide();
+    $('#speech_recognition_voice_activation_silence_delay_div').hide();
+    return;
+  }
+  
+  $('#speech_recognition_message_mode_div').show();
+  $('#speech_recognition_message_mapping_div').show();
+  $('#speech_recognition_language_div').show();
+  
+  sttProvider = new sttProviders[sttProviderName];
 
-    $('#speech_recognition_message_mode_div').show();
-    $('#speech_recognition_message_mapping_div').show();
-    $('#speech_recognition_language_div').show();
+  // Init provider settings
+  $('#speech_recognition_provider_settings').append(sttProvider.settingsHtml);
 
-    sttProvider = new sttProviders[sttProviderName];
+  // Use microphone button as push to talk
+  if (sttProviderName == 'Browser') {
+    $('#speech_recognition_language_div').hide();
+    sttProvider.processTranscriptFunction = processTranscript;
+    sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
+    $('#microphone_button').show();
+  }
 
-    // Init provider settings
-    $('#speech_recognition_provider_settings').append(sttProvider.settingsHtml);
+  const nonStreamingProviders = ['Vosk', 'OpenAI', 'Whisper (Extras)', 'Whisper (Local)', 'KoboldCpp'];
+  if (nonStreamingProviders.includes(sttProviderName)) {
+    sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
+    loadNavigatorAudioRecording();
+    $('#microphone_button').show();
+  }
 
-    // Use microphone button as push to talk
-    if (sttProviderName == 'Browser') {
-        $('#speech_recognition_language_div').hide();
-        sttProvider.processTranscriptFunction = processTranscript;
-        sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
-        $('#microphone_button').show();
-    }
+  if (sttProviderName == 'Streaming') {
+    sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
+    $('#microphone_button').off('click');
+    $('#microphone_button').hide();
+  }
 
-    const nonStreamingProviders = ['Vosk', 'OpenAI', 'Whisper (Extras)', 'Whisper (Local)', 'KoboldCpp'];
-    if (nonStreamingProviders.includes(sttProviderName)) {
-        sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
-        loadNavigatorAudioRecording();
-        $('#microphone_button').show();
-    }
+  $('#speech_recognition_ptt_div').toggle(sttProviderName != 'Streaming');
+  $('#speech_recognition_voice_activation_enabled_div').toggle(sttProviderName != 'Streaming');
+  
+  $('#speech_recognition_voice_activation_silence_delay_div').toggle(
+    sttProviderName != 'Streaming' && extension_settings.speech_recognition.voiceActivationEnabled
+  );
+  
+}
 
-    if (sttProviderName == 'Streaming') {
-        sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
-        $('#microphone_button').off('click');
-        $('#microphone_button').hide();
-    }
+function setVoiceActivationSilenceTimer() {
+  
+  clearVoiceActivationSilenceTimer();
+  
+  if(extension_settings.speech_recognition.voiceActivationSilenceDelay) {
+    audioTimerSilence = setTimeout(
+      () => stopRecording(),
+      extension_settings.speech_recognition.voiceActivationSilenceDelay
+    );
+  } else {
+    stopRecording();
+  }
+  
+}
 
-    $('#speech_recognition_ptt_div').toggle(sttProviderName != 'Streaming');
-    $('#speech_recognition_voice_activation_enabled_div').toggle(sttProviderName != 'Streaming');
+function clearVoiceActivationSilenceTimer() {
+  if(!audioTimerSilence) return;
+  clearTimeout(audioTimerSilence);
+  audioTimerSilence = null;
+}
+
+function startRecording() {
+  
+  if(audioRecording) return;
+  audioRecording = true;
+  
+  const micButton = $('#microphone_button');
+  
+  if (!mediaRecorder) {
+    // go back through the same init path
+    micButton.off('click');
+    navigator.mediaDevices
+    .getUserMedia(constraints)
+    .then(onGetUserMediaSuccess, onGetUserMediaError);
+    return;
+  }
+  
+  mediaRecorder.start();
+  console.debug(DEBUG_PREFIX + mediaRecorder.state);
+  console.debug(DEBUG_PREFIX + 'recorder started');
+  activateMicIcon(micButton);
+  
+}
+
+function stopRecording() {
+  
+  if(!audioRecording) return;
+  audioRecording = false;
+  
+  mediaRecorder.stop();
+  console.debug(DEBUG_PREFIX + mediaRecorder.state);
+  console.debug(DEBUG_PREFIX + 'recorder stopped');
+  clearVoiceActivationSilenceTimer();
+  
+  const micButton = $('#microphone_button');
+  deactivateMicIcon(micButton);
+  
 }
 
 /**
@@ -393,8 +462,8 @@ function loadSttProvider(provider) {
  * @param {JQuery} micButton - The jQuery object of the microphone button.
  */
 function activateMicIcon(micButton) {
-    micButton.toggleClass('fa-microphone fa-microphone-slash');
-    micButton.prop('title', 'Click to end and transcribe');
+  micButton.toggleClass('fa-microphone fa-microphone-slash');
+  micButton.prop('title', 'Click to end and transcribe');
 }
 
 /**
@@ -402,47 +471,43 @@ function activateMicIcon(micButton) {
  * @param {JQuery} micButton - The jQuery object of the microphone button.
  */
 function deactivateMicIcon(micButton) {
-    micButton.toggleClass('fa-microphone fa-microphone-slash');
-    micButton.prop('title', 'Click to speak');
+  micButton.toggleClass('fa-microphone fa-microphone-slash');
+  micButton.prop('title', 'Click to speak');
 }
 
 function stopCurrentProvider() {
-    console.debug(DEBUG_PREFIX + 'stop current provider');
-    if (mediaRecorder) {
-        mediaRecorder.onstop = null;
-        mediaRecorder.ondataavailable = null;
-        mediaRecorder.stream.getTracks().forEach(track => track.stop());
-        mediaRecorder.stop();
-        mediaRecorder = null;
-    }
-    if (audioRecording) {
-        audioRecording = false;
-        const micButton = $('#microphone_button');
-        if (micButton.is(':visible')) {
-            deactivateMicIcon(micButton);
-        }
-    }
+  console.debug(DEBUG_PREFIX + 'stop current provider');
+  
+  if(!mediaRecorder) return;
+  
+  stopRecording();
+  
+  mediaRecorder.onstop = null;
+  mediaRecorder.ondataavailable = null;
+  mediaRecorder.stream.getTracks().forEach(track => track.stop());
+  mediaRecorder = null;
+  
 }
 
 function onSttLanguageChange() {
-    extension_settings.speech_recognition[sttProviderName].language = String($('#speech_recognition_language').val());
-    sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
-    saveSettingsDebounced();
+  extension_settings.speech_recognition[sttProviderName].language = String($('#speech_recognition_language').val());
+  sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
+  saveSettingsDebounced();
 }
 
 function onSttProviderChange() {
-    const sttProviderSelection = $('#speech_recognition_provider').val();
-    loadSttProvider(sttProviderSelection);
-    saveSettingsDebounced();
+  const sttProviderSelection = $('#speech_recognition_provider').val();
+  loadSttProvider(sttProviderSelection);
+  saveSettingsDebounced();
 }
 
 function onSttProviderSettingsInput() {
-    sttProvider.onSettingsChange();
+  sttProvider.onSettingsChange();
 
-    // Persist changes to SillyTavern stt extension settings
-    extension_settings.speech_recognition[sttProviderName] = sttProvider.settings;
-    saveSettingsDebounced();
-    console.info(`Saved settings ${sttProviderName} ${JSON.stringify(sttProvider.settings)}`);
+  // Persist changes to SillyTavern stt extension settings
+  extension_settings.speech_recognition[sttProviderName] = sttProvider.settings;
+  saveSettingsDebounced();
+  console.info(`Saved settings ${sttProviderName} ${JSON.stringify(sttProvider.settings)}`);
 }
 
 //#############################//
@@ -450,135 +515,149 @@ function onSttProviderSettingsInput() {
 //#############################//
 
 const defaultSettings = {
-    currentProvider: 'None',
-    messageMode: 'append',
-    messageMappingText: '',
-    messageMapping: [],
-    messageMappingEnabled: false,
-    voiceActivationEnabled: false,
-    /**
-     * @type {KeyCombo} Push-to-talk key combo
-     */
-    ptt: null,
+  currentProvider: 'None',
+  messageMode: 'append',
+  messageMappingText: '',
+  messageMapping: [],
+  messageMappingEnabled: false,
+  voiceActivationEnabled: false,
+  /**
+   * @type {KeyCombo} Push-to-talk key combo
+   */
+  ptt: null,
 };
 
 function loadSettings() {
-    if (Object.keys(extension_settings.speech_recognition).length === 0) {
-        Object.assign(extension_settings.speech_recognition, defaultSettings);
+  if (Object.keys(extension_settings.speech_recognition).length === 0) {
+    Object.assign(extension_settings.speech_recognition, defaultSettings);
+  }
+  for (const key in defaultSettings) {
+    if (extension_settings.speech_recognition[key] === undefined) {
+      extension_settings.speech_recognition[key] = defaultSettings[key];
     }
-    for (const key in defaultSettings) {
-        if (extension_settings.speech_recognition[key] === undefined) {
-            extension_settings.speech_recognition[key] = defaultSettings[key];
-        }
-    }
+  }
 
-    if (extension_settings.speech_recognition.currentProvider === 'Whisper (OpenAI)') {
-        extension_settings.speech_recognition.currentProvider = 'OpenAI';
-    }
-    if (extension_settings.speech_recognition['Whisper (OpenAI)'] && !extension_settings.speech_recognition['OpenAI']) {
-        extension_settings.speech_recognition['OpenAI'] = extension_settings.speech_recognition['Whisper (OpenAI)'];
-    }
+  if (extension_settings.speech_recognition.currentProvider === 'Whisper (OpenAI)') {
+    extension_settings.speech_recognition.currentProvider = 'OpenAI';
+  }
+  if (extension_settings.speech_recognition['Whisper (OpenAI)'] && !extension_settings.speech_recognition['OpenAI']) {
+    extension_settings.speech_recognition['OpenAI'] = extension_settings.speech_recognition['Whisper (OpenAI)'];
+  }
 
-    $('#speech_recognition_enabled').prop('checked', extension_settings.speech_recognition.enabled);
-    $('#speech_recognition_message_mode').val(extension_settings.speech_recognition.messageMode);
+  $('#speech_recognition_enabled').prop('checked', extension_settings.speech_recognition.enabled);
+  $('#speech_recognition_message_mode').val(extension_settings.speech_recognition.messageMode);
 
-    if (extension_settings.speech_recognition.messageMappingText.length > 0) {
-        $('#speech_recognition_message_mapping').val(extension_settings.speech_recognition.messageMappingText);
-    }
+  if (extension_settings.speech_recognition.messageMappingText.length > 0) {
+    $('#speech_recognition_message_mapping').val(extension_settings.speech_recognition.messageMappingText);
+  }
 
-    $('#speech_recognition_message_mapping_enabled').prop('checked', extension_settings.speech_recognition.messageMappingEnabled);
-    $('#speech_recognition_ptt').val(extension_settings.speech_recognition.ptt ? formatPushToTalkKey(extension_settings.speech_recognition.ptt) : '');
-    $('#speech_recognition_voice_activation_enabled').prop('checked', extension_settings.speech_recognition.voiceActivationEnabled);
+  $('#speech_recognition_message_mapping_enabled').prop('checked', extension_settings.speech_recognition.messageMappingEnabled);
+  $('#speech_recognition_ptt').val(extension_settings.speech_recognition.ptt ? formatPushToTalkKey(extension_settings.speech_recognition.ptt) : '');
+  $('#speech_recognition_voice_activation_enabled').prop('checked', extension_settings.speech_recognition.voiceActivationEnabled);
+  $('#speech_recognition_voice_activation_silence_delay').val(extension_settings.speech_recognition.voiceActivationSilenceDelay ?? 0);
 }
 
 async function onMessageModeChange() {
-    extension_settings.speech_recognition.messageMode = $('#speech_recognition_message_mode').val();
+  extension_settings.speech_recognition.messageMode = $('#speech_recognition_message_mode').val();
 
-    if (sttProviderName != 'Browser' && extension_settings.speech_recognition.messageMode == 'auto_send') {
-        $('#speech_recognition_wait_response_div').show();
-    }
-    else {
-        $('#speech_recognition_wait_response_div').hide();
-    }
+  if (sttProviderName != 'Browser' && extension_settings.speech_recognition.messageMode == 'auto_send') {
+    $('#speech_recognition_wait_response_div').show();
+  }
+  else {
+    $('#speech_recognition_wait_response_div').hide();
+  }
 
-    saveSettingsDebounced();
+  saveSettingsDebounced();
 }
 
 async function onMessageMappingChange() {
-    let array = String($('#speech_recognition_message_mapping').val()).split(',');
-    array = array.map(element => { return element.trim(); });
-    array = array.filter((str) => str !== '');
-    extension_settings.speech_recognition.messageMapping = {};
-    for (const text of array) {
-        if (text.includes('=')) {
-            const pair = text.toLowerCase().split('=');
-            extension_settings.speech_recognition.messageMapping[pair[0].trim()] = pair[1].trim();
-            console.debug(DEBUG_PREFIX + 'Added mapping', pair[0], '=>', extension_settings.speech_recognition.messageMapping[pair[0]]);
-        }
-        else {
-            console.debug(DEBUG_PREFIX + 'Wrong syntax for message mapping, no \'=\' found in:', text);
-        }
+  let array = String($('#speech_recognition_message_mapping').val()).split(',');
+  array = array.map(element => { return element.trim(); });
+  array = array.filter((str) => str !== '');
+  extension_settings.speech_recognition.messageMapping = {};
+  for (const text of array) {
+    if (text.includes('=')) {
+      const pair = text.toLowerCase().split('=');
+      extension_settings.speech_recognition.messageMapping[pair[0].trim()] = pair[1].trim();
+      console.debug(DEBUG_PREFIX + 'Added mapping', pair[0], '=>', extension_settings.speech_recognition.messageMapping[pair[0]]);
     }
+    else {
+      console.debug(DEBUG_PREFIX + 'Wrong syntax for message mapping, no \'=\' found in:', text);
+    }
+  }
 
-    $('#speech_recognition_message_mapping_status').text('Message mapping updated to: ' + JSON.stringify(extension_settings.speech_recognition.messageMapping));
-    console.debug(DEBUG_PREFIX + 'Updated message mapping', extension_settings.speech_recognition.messageMapping);
-    extension_settings.speech_recognition.messageMappingText = $('#speech_recognition_message_mapping').val();
-    saveSettingsDebounced();
+  $('#speech_recognition_message_mapping_status').text('Message mapping updated to: ' + JSON.stringify(extension_settings.speech_recognition.messageMapping));
+  console.debug(DEBUG_PREFIX + 'Updated message mapping', extension_settings.speech_recognition.messageMapping);
+  extension_settings.speech_recognition.messageMappingText = $('#speech_recognition_message_mapping').val();
+  saveSettingsDebounced();
 }
 
 async function onMessageMappingEnabledClick() {
-    extension_settings.speech_recognition.messageMappingEnabled = $('#speech_recognition_message_mapping_enabled').is(':checked');
-    saveSettingsDebounced();
+  extension_settings.speech_recognition.messageMappingEnabled = $('#speech_recognition_message_mapping_enabled').is(':checked');
+  saveSettingsDebounced();
 }
 
 function onVoiceActivationEnabledChange() {
-    const enabled = !!$('#speech_recognition_voice_activation_enabled').prop('checked');
-    extension_settings.speech_recognition.voiceActivationEnabled = enabled;
-
-    const micButton = $('#microphone_button');
-
-    if (enabled) {
-        micButton.off('click');
-        loadNavigatorAudioRecording();
-    } else {
-        if (!audioRecording) {
-            if (mediaRecorder && mediaRecorder.stream) {
-                try {
-                    mediaRecorder.stream.getTracks().forEach(t => t.stop());
-                } catch (e) {
-                    console.error(DEBUG_PREFIX + 'error stopping media stream tracks:', e);
-                }
-            }
-            mediaRecorder = null;
-
-            // rebind to the lazy handler
-            micButton.off('click');
-            loadNavigatorAudioRecording();
+  const enabled = !!$('#speech_recognition_voice_activation_enabled').prop('checked');
+  
+  extension_settings.speech_recognition.voiceActivationEnabled = enabled;
+  
+  const micButton = $('#microphone_button');
+  
+  if (enabled) {
+    micButton.off('click');
+    loadNavigatorAudioRecording();
+  } else {
+    if(!audioRecording) {
+      
+      if (mediaRecorder && mediaRecorder.stream) {
+        try {
+          mediaRecorder.stream.getTracks().forEach(t => t.stop());
+        } catch (e) {
+          console.error(DEBUG_PREFIX + 'error stopping media stream tracks:', e);
         }
-    }
+      }
+      mediaRecorder = null;
 
-    saveSettingsDebounced();
+      // rebind to the lazy handler
+      micButton.off('click');
+      loadNavigatorAudioRecording();
+      
+    }
+  }
+  
+  saveSettingsDebounced();
+  
+}
+
+function onVoiceActivationSilenceDelayChange() {
+  const value = !!$('#speech_recognition_voice_activation_silence_delay').val();
+  
+  extension_settings.speech_recognition.voiceActivationSilenceDelay = value;
+  
+  saveSettingsDebounced();
+  
 }
 
 async function convertAudioBufferToWavBlob(audioBuffer) {
-    return new Promise(function (resolve) {
-        var worker = new Worker('/scripts/extensions/third-party/Extension-Speech-Recognition/wave-worker.js');
+  return new Promise(function (resolve) {
+    var worker = new Worker('/scripts/extensions/third-party/Extension-Speech-Recognition/wave-worker.js');
 
-        worker.onmessage = function (e) {
-            var blob = new Blob([e.data.buffer], { type: 'audio/wav' });
-            resolve(blob);
-        };
+    worker.onmessage = function (e) {
+      var blob = new Blob([e.data.buffer], { type: 'audio/wav' });
+      resolve(blob);
+    };
 
-        let pcmArrays = [];
-        for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-            pcmArrays.push(audioBuffer.getChannelData(i));
-        }
+    let pcmArrays = [];
+    for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+      pcmArrays.push(audioBuffer.getChannelData(i));
+    }
 
-        worker.postMessage({
-            pcmArrays,
-            config: { sampleRate: audioBuffer.sampleRate },
-        });
+    worker.postMessage({
+      pcmArrays,
+      config: { sampleRate: audioBuffer.sampleRate },
     });
+  });
 }
 
 /**
@@ -596,13 +675,13 @@ async function convertAudioBufferToWavBlob(audioBuffer) {
  * @returns {KeyCombo} Key combo object
  */
 function keyboardEventToKeyCombo(event) {
-    return {
-        code: event.code,
-        ctrl: event.ctrlKey,
-        alt: event.altKey,
-        shift: event.shiftKey,
-        meta: event.metaKey,
-    };
+  return {
+    code: event.code,
+    ctrl: event.ctrlKey,
+    alt: event.altKey,
+    shift: event.shiftKey,
+    meta: event.metaKey,
+  };
 }
 
 /**
@@ -610,10 +689,10 @@ function keyboardEventToKeyCombo(event) {
  * @type {Record<string, string>}
  */
 const WINDOWS_LABELS = {
-    ctrl: 'Ctrl',
-    alt: 'Alt',
-    shift: 'Shift',
-    meta: 'Win',
+  ctrl: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  meta: 'Win',
 };
 
 /**
@@ -621,10 +700,10 @@ const WINDOWS_LABELS = {
  * @type {Record<string, string>}
  */
 const MAC_LABELS = {
-    ctrl: '⌃',
-    alt: '⌥',
-    shift: '⇧',
-    meta: '⌘',
+  ctrl: '⌃',
+  alt: '⌥',
+  shift: '⇧',
+  meta: '⌘',
 };
 
 /**
@@ -632,10 +711,10 @@ const MAC_LABELS = {
  * @type {Record<string, string>}
  */
 const LINUX_LABELS = {
-    ctrl: 'Ctrl',
-    alt: 'Alt',
-    shift: 'Shift',
-    meta: 'Meta',
+  ctrl: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  meta: 'Meta',
 };
 
 /**
@@ -643,14 +722,14 @@ const LINUX_LABELS = {
  * @returns {Record<string, string>}
  */
 function getLabelsForUserAgent() {
-    const userAgent = navigator.userAgent;
-    if (userAgent.includes('Macintosh')) {
-        return MAC_LABELS;
-    } else if (userAgent.includes('Windows')) {
-        return WINDOWS_LABELS;
-    } else {
-        return LINUX_LABELS;
-    }
+  const userAgent = navigator.userAgent;
+  if (userAgent.includes('Macintosh')) {
+    return MAC_LABELS;
+  } else if (userAgent.includes('Windows')) {
+    return WINDOWS_LABELS;
+  } else {
+    return LINUX_LABELS;
+  }
 }
 
 /**
@@ -659,22 +738,22 @@ function getLabelsForUserAgent() {
  * @returns {string} String representation of the key combo
  */
 function formatPushToTalkKey(key) {
-    const labels = getLabelsForUserAgent();
-    const parts = [];
-    if (key.ctrl) {
-        parts.push(labels.ctrl);
-    }
-    if (key.alt) {
-        parts.push(labels.alt);
-    }
-    if (key.shift) {
-        parts.push(labels.shift);
-    }
-    if (key.meta) {
-        parts.push(labels.meta);
-    }
-    parts.push(key.code);
-    return parts.join(' + ');
+  const labels = getLabelsForUserAgent();
+  const parts = [];
+  if (key.ctrl) {
+    parts.push(labels.ctrl);
+  }
+  if (key.alt) {
+    parts.push(labels.alt);
+  }
+  if (key.shift) {
+    parts.push(labels.shift);
+  }
+  if (key.meta) {
+    parts.push(labels.meta);
+  }
+  parts.push(key.code);
+  return parts.join(' + ');
 }
 
 /**
@@ -684,11 +763,11 @@ function formatPushToTalkKey(key) {
  * @returns
  */
 function isKeyComboMatch(keyCombo, event) {
-    return keyCombo.code === event.code
-        && keyCombo.ctrl === event.ctrlKey
-        && keyCombo.alt === event.altKey
-        && keyCombo.shift === event.shiftKey
-        && keyCombo.meta === event.metaKey;
+  return keyCombo.code === event.code
+    && keyCombo.ctrl === event.ctrlKey
+    && keyCombo.alt === event.altKey
+    && keyCombo.shift === event.shiftKey
+    && keyCombo.meta === event.metaKey;
 }
 
 /**
@@ -696,7 +775,7 @@ function isKeyComboMatch(keyCombo, event) {
  * @returns {boolean} True if push-to-talk is enabled
  */
 function isPushToTalkEnabled() {
-    return extension_settings.speech_recognition.ptt !== null && sttProviderName !== 'Streaming' && sttProviderName !== 'None';
+  return extension_settings.speech_recognition.ptt !== null && sttProviderName !== 'Streaming' && sttProviderName !== 'None';
 }
 
 let lastPressTime = 0;
@@ -706,19 +785,19 @@ let lastPressTime = 0;
  * @param {KeyboardEvent} event Event
  */
 function processPushToTalkStart(event) {
-    // Push-to-talk not enabled
-    if (!isPushToTalkEnabled()) {
-        return;
-    }
+  // Push-to-talk not enabled
+  if (!isPushToTalkEnabled()) {
+    return;
+  }
 
-    const key = extension_settings.speech_recognition.ptt;
+  const key = extension_settings.speech_recognition.ptt;
 
-    // Key combo match - toggle recording
-    if (isKeyComboMatch(key, event) && !event.repeat) {
-        console.debug(DEBUG_PREFIX + 'Push-to-talk key pressed');
-        lastPressTime = Date.now();
-        $('#microphone_button').trigger('click');
-    }
+  // Key combo match - toggle recording
+  if (isKeyComboMatch(key, event) && !event.repeat) {
+    console.debug(DEBUG_PREFIX + 'Push-to-talk key pressed');
+    lastPressTime = Date.now();
+    $('#microphone_button').trigger('click');
+  }
 }
 
 /**
@@ -726,28 +805,28 @@ function processPushToTalkStart(event) {
  * @param {KeyboardEvent} event Event
  */
 function processPushToTalkEnd(event) {
-    // Push-to-talk not enabled
-    if (!isPushToTalkEnabled()) {
-        return;
+  // Push-to-talk not enabled
+  if (!isPushToTalkEnabled()) {
+    return;
+  }
+
+  /** @type {KeyCombo} */
+  const key = extension_settings.speech_recognition.ptt;
+
+  // Key combo match (without modifier keys)
+  if (key.code === event.code) {
+    console.debug(DEBUG_PREFIX + 'Push-to-talk key released');
+
+    // If the key was held for more than 500ms and still recording, stop recording
+    if (Date.now() - lastPressTime > 500 && audioRecording) {
+      $('#microphone_button').trigger('click');
     }
-
-    /** @type {KeyCombo} */
-    const key = extension_settings.speech_recognition.ptt;
-
-    // Key combo match (without modifier keys)
-    if (key.code === event.code) {
-        console.debug(DEBUG_PREFIX + 'Push-to-talk key released');
-
-        // If the key was held for more than 500ms and still recording, stop recording
-        if (Date.now() - lastPressTime > 500 && audioRecording) {
-            $('#microphone_button').trigger('click');
-        }
-    }
+  }
 }
 
 $(document).ready(function () {
-    function addExtensionControls() {
-        const settingsHtml = `
+  function addExtensionControls() {
+    const settingsHtml = `
         <div id="speech_recognition_settings">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
@@ -834,6 +913,12 @@ $(document).ready(function () {
                             <small>Enable activation by voice</small>
                         </label>
                     </div>
+                    <div id="speech_recognition_voice_activation_silence_delay_div" title="Allowed delay in milliseconds after the speaker stops speaking.">
+                        <label class="checkbox_label" for="speech_recognition_voice_activation_silence_delay">
+                            <input type="number" min="0" max="60000" id="speech_recognition_voice_activation_silence_delay" name="speech_recognition_voice_activation_silence_delay">
+                            <small>Enable activation by voice</small>
+                        </label>
+                    </div>
                     <div id="speech_recognition_message_mode_div">
                         <span>Message Mode</span> </br>
                         <select id="speech_recognition_message_mode">
@@ -857,70 +942,73 @@ $(document).ready(function () {
             </div>
         </div>
         `;
-        const getContainer = () => $(document.getElementById('stt_container') ?? document.getElementById('extensions_settings'));
-        getContainer().append(settingsHtml);
-        $('#speech_recognition_provider_settings').on('input', onSttProviderSettingsInput);
-        for (const provider in sttProviders) {
-            $('#speech_recognition_provider').append($('<option />').val(provider).text(provider));
-            console.debug(DEBUG_PREFIX + 'added option ' + provider);
-        }
-        $('#speech_recognition_provider').on('change', onSttProviderChange);
-        $('#speech_recognition_message_mode').on('change', onMessageModeChange);
-        $('#speech_recognition_message_mapping').on('change', onMessageMappingChange);
-        $('#speech_recognition_language').on('change', onSttLanguageChange);
-        $('#speech_recognition_message_mapping_enabled').on('click', onMessageMappingEnabledClick);
-        $('#speech_recognition_voice_activation_enabled').on('change', onVoiceActivationEnabledChange);
-        $('#speech_recognition_ptt').on('focus', function () {
-            if (this instanceof HTMLInputElement) {
-                this.value = 'Enter a key combo. "Escape" to clear';
-                $(this).off('keydown').on('keydown', function (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    if (e.key === 'Meta' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Control') {
-                        return;
-                    }
-
-                    if (e.key === 'Escape') {
-                        extension_settings.speech_recognition.ptt = null;
-                        saveSettingsDebounced();
-                        return this.blur();
-                    }
-
-                    const keyCombo = keyboardEventToKeyCombo(e);
-                    extension_settings.speech_recognition.ptt = keyCombo;
-                    saveSettingsDebounced();
-                    return this.blur();
-                });
-            }
-        });
-        $('#speech_recognition_ptt').on('blur', function () {
-            if (this instanceof HTMLInputElement) {
-                $(this).off('keydown');
-                if (extension_settings.speech_recognition.ptt) {
-                    this.value = formatPushToTalkKey(extension_settings.speech_recognition.ptt);
-                } else {
-                    this.value = '';
-                }
-            }
-        });
-
-        document.body.addEventListener('keydown', processPushToTalkStart);
-        document.body.addEventListener('keyup', processPushToTalkEnd);
-
-        const $button = $('<div id="microphone_button" class="fa-solid fa-microphone speech-toggle interactable" tabindex="0" title="Click to speak"></div>');
-        // For versions before 1.10.10
-        if ($('#send_but_sheld').length == 0) {
-            $('#rightSendForm').prepend($button);
-        } else {
-            $('#send_but_sheld').prepend($button);
-        }
-
+    const getContainer = () => $(document.getElementById('stt_container') ?? document.getElementById('extensions_settings'));
+    getContainer().append(settingsHtml);
+    $('#speech_recognition_provider_settings').on('input', onSttProviderSettingsInput);
+    for (const provider in sttProviders) {
+      $('#speech_recognition_provider').append($('<option />').val(provider).text(provider));
+      console.debug(DEBUG_PREFIX + 'added option ' + provider);
     }
-    addExtensionControls(); // No init dependencies
-    loadSettings(); // Depends on Extension Controls and loadTtsProvider
-    loadSttProvider(extension_settings.speech_recognition.currentProvider); // No dependencies
-    const wrapper = new ModuleWorkerWrapper(moduleWorker);
-    setInterval(wrapper.update.bind(wrapper), UPDATE_INTERVAL); // Init depends on all the things
-    moduleWorker();
+    $('#speech_recognition_provider').on('change', onSttProviderChange);
+    $('#speech_recognition_message_mode').on('change', onMessageModeChange);
+    $('#speech_recognition_message_mapping').on('change', onMessageMappingChange);
+    $('#speech_recognition_language').on('change', onSttLanguageChange);
+    $('#speech_recognition_message_mapping_enabled').on('click', onMessageMappingEnabledClick);
+    
+    $('#speech_recognition_voice_activation_enabled').on('change', onVoiceActivationEnabledChange);
+    $('#speech_recognition_voice_activation_silence_delay').on('change', onVoiceActivationSilenceDelayChange);
+    
+    $('#speech_recognition_ptt').on('focus', function () {
+      if (this instanceof HTMLInputElement) {
+        this.value = 'Enter a key combo. "Escape" to clear';
+        $(this).off('keydown').on('keydown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          if (e.key === 'Meta' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Control') {
+            return;
+          }
+
+          if (e.key === 'Escape') {
+            extension_settings.speech_recognition.ptt = null;
+            saveSettingsDebounced();
+            return this.blur();
+          }
+
+          const keyCombo = keyboardEventToKeyCombo(e);
+          extension_settings.speech_recognition.ptt = keyCombo;
+          saveSettingsDebounced();
+          return this.blur();
+        });
+      }
+    });
+    $('#speech_recognition_ptt').on('blur', function () {
+      if (this instanceof HTMLInputElement) {
+        $(this).off('keydown');
+        if (extension_settings.speech_recognition.ptt) {
+          this.value = formatPushToTalkKey(extension_settings.speech_recognition.ptt);
+        } else {
+          this.value = '';
+        }
+      }
+    });
+
+    document.body.addEventListener('keydown', processPushToTalkStart);
+    document.body.addEventListener('keyup', processPushToTalkEnd);
+
+    const $button = $('<div id="microphone_button" class="fa-solid fa-microphone speech-toggle interactable" tabindex="0" title="Click to speak"></div>');
+    // For versions before 1.10.10
+    if ($('#send_but_sheld').length == 0) {
+      $('#rightSendForm').prepend($button);
+    } else {
+      $('#send_but_sheld').prepend($button);
+    }
+
+  }
+  addExtensionControls(); // No init dependencies
+  loadSettings(); // Depends on Extension Controls and loadTtsProvider
+  loadSttProvider(extension_settings.speech_recognition.currentProvider); // No dependencies
+  const wrapper = new ModuleWorkerWrapper(moduleWorker);
+  setInterval(wrapper.update.bind(wrapper), UPDATE_INTERVAL); // Init depends on all the things
+  moduleWorker();
 });
