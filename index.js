@@ -206,30 +206,30 @@ async function processTranscript(transcript) {
 
 
 function onGetUserMediaSuccess(stream) {
-  
+
   const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
   const audioContext = new AudioContext(!isFirefox ? { sampleRate: 16000 } : null);
   const source = audioContext.createMediaStreamSource(stream);
-  
+
   const settings = {
     source: source,
     voice_start: function () {
-      
-      if(isRecording) {
+
+      if (isRecording) {
         clearVoiceActivationSilenceTimer();
       } else if (extension_settings.speech_recognition.voiceActivationEnabled) {
         console.debug(DEBUG_PREFIX + 'Voice started');
         startRecording();
       }
-      
+
     },
     voice_stop: function () {
-      
+
       if (isRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
         console.debug(DEBUG_PREFIX + 'Voice stopped');
         setVoiceActivationSilenceTimer();
       }
-      
+
     },
   };
 
@@ -239,18 +239,18 @@ function onGetUserMediaSuccess(stream) {
   }
 
   mediaRecorder = new MediaRecorder(stream);
-  
+
   const micButton = $('#microphone_button');
-  
+
   micButton
-  .off('click')
-  .on('click', function () {
-    
-    isRecording
-    ? stopRecording()
-    : startRecording();
-    
-  });
+    .off('click')
+    .on('click', function () {
+
+      isRecording
+        ? stopRecording()
+        : startRecording();
+
+    });
 
   mediaRecorder.onstop = async function () {
     console.debug(DEBUG_PREFIX + 'data available after MediaRecorder.stop() called: ', audioChunks.length, ' chunks');
@@ -283,7 +283,7 @@ function onGetUserMediaSuccess(stream) {
   mediaRecorder.ondataavailable = function (e) {
     audioChunks.push(e.data);
   };
-  
+
 };
 
 function onGetUserMediaError(err) {
@@ -293,32 +293,32 @@ function onGetUserMediaError(err) {
 
 function loadNavigatorAudioRecording() {
   if (navigator.mediaDevices.getUserMedia) {
-    
+
     console.debug(DEBUG_PREFIX + ' getUserMedia supported by browser.');
     const micButton = $('#microphone_button');
     const micClickHandler = function () {
-      
+
       micButton.off('click');
-      
+
       navigator.mediaDevices
-      .getUserMedia(constraints)
-      .then(
-        (s) => {
-          onGetUserMediaSuccess(s);
-          startRecording();
-        },
-        onGetUserMediaError
-      );
-      
+        .getUserMedia(constraints)
+        .then(
+          (s) => {
+            onGetUserMediaSuccess(s);
+            startRecording();
+          },
+          onGetUserMediaError
+        );
+
     };
-    
+
     // only open mic immediately if voice activation is enabled
     if (extension_settings.speech_recognition.voiceActivationEnabled) {
-      
+
       navigator.mediaDevices
-      .getUserMedia(constraints)
-      .then(onGetUserMediaSuccess, onGetUserMediaError);
-      
+        .getUserMedia(constraints)
+        .then(onGetUserMediaSuccess, onGetUserMediaError);
+
     } else {
       micButton.off('click').on('click', micClickHandler);
     }
@@ -360,11 +360,11 @@ function loadSttProvider(provider) {
     $('#speech_recognition_voice_activation_silence_delay_div').hide();
     return;
   }
-  
+
   $('#speech_recognition_message_mode_div').show();
   $('#speech_recognition_message_mapping_div').show();
   $('#speech_recognition_language_div').show();
-  
+
   sttProvider = new sttProviders[sttProviderName];
 
   // Init provider settings
@@ -393,18 +393,18 @@ function loadSttProvider(provider) {
 
   $('#speech_recognition_ptt_div').toggle(sttProviderName != 'Streaming');
   $('#speech_recognition_voice_activation_enabled_div').toggle(sttProviderName != 'Streaming');
-  
+
   $('#speech_recognition_voice_activation_silence_delay_div').toggle(
     sttProviderName != 'Streaming' && extension_settings.speech_recognition.voiceActivationEnabled
   );
-  
+
 }
 
 function setVoiceActivationSilenceTimer() {
-  
+
   clearVoiceActivationSilenceTimer();
-  
-  if(extension_settings.speech_recognition.voiceActivationSilenceDelay) {
+
+  if (extension_settings.speech_recognition.voiceActivationSilenceDelay) {
     timerVoiceActivationSilence = setTimeout(
       () => stopRecording(),
       extension_settings.speech_recognition.voiceActivationSilenceDelay
@@ -412,51 +412,51 @@ function setVoiceActivationSilenceTimer() {
   } else {
     stopRecording();
   }
-  
+
 }
 
 function clearVoiceActivationSilenceTimer() {
-  if(!timerVoiceActivationSilence) return;
+  if (!timerVoiceActivationSilence) return;
   clearTimeout(timerVoiceActivationSilence);
   timerVoiceActivationSilence = null;
 }
 
 function startRecording() {
-  
-  if(isRecording) return;
+
+  if (isRecording) return;
   isRecording = true;
-  
+
   const micButton = $('#microphone_button');
-  
+
   if (!mediaRecorder) {
     // go back through the same init path
     micButton.off('click');
     navigator.mediaDevices
-    .getUserMedia(constraints)
-    .then(onGetUserMediaSuccess, onGetUserMediaError);
+      .getUserMedia(constraints)
+      .then(onGetUserMediaSuccess, onGetUserMediaError);
     return;
   }
-  
+
   mediaRecorder.start();
   console.debug(DEBUG_PREFIX + mediaRecorder.state);
   console.debug(DEBUG_PREFIX + 'recorder started');
   activateMicIcon(micButton);
-  
+
 }
 
 function stopRecording() {
-  
-  if(!isRecording) return;
+
+  if (!isRecording) return;
   isRecording = false;
-  
+
   mediaRecorder.stop();
   console.debug(DEBUG_PREFIX + mediaRecorder.state);
   console.debug(DEBUG_PREFIX + 'recorder stopped');
   clearVoiceActivationSilenceTimer();
-  
+
   const micButton = $('#microphone_button');
   deactivateMicIcon(micButton);
-  
+
 }
 
 /**
@@ -479,16 +479,16 @@ function deactivateMicIcon(micButton) {
 
 function stopCurrentProvider() {
   console.debug(DEBUG_PREFIX + 'stop current provider');
-  
-  if(!mediaRecorder) return;
-  
+
+  if (!mediaRecorder) return;
+
   stopRecording();
-  
+
   mediaRecorder.onstop = null;
   mediaRecorder.ondataavailable = null;
   mediaRecorder.stream.getTracks().forEach(track => track.stop());
   mediaRecorder = null;
-  
+
 }
 
 function onSttLanguageChange() {
@@ -601,17 +601,24 @@ async function onMessageMappingEnabledClick() {
 
 function onVoiceActivationEnabledChange() {
   const enabled = !!$('#speech_recognition_voice_activation_enabled').prop('checked');
-  
+
   extension_settings.speech_recognition.voiceActivationEnabled = enabled;
-  
+
+  $('#speech_recognition_voice_activation_silence_delay_div').toggle(
+    sttProviderName != 'Streaming' && extension_settings.speech_recognition.voiceActivationEnabled
+  );
+
   const micButton = $('#microphone_button');
-  
+
   if (enabled) {
+
     micButton.off('click');
     loadNavigatorAudioRecording();
+
   } else {
-    if(!isRecording) {
-      
+
+    if (!isRecording) {
+
       if (mediaRecorder && mediaRecorder.stream) {
         try {
           mediaRecorder.stream.getTracks().forEach(t => t.stop());
@@ -624,20 +631,35 @@ function onVoiceActivationEnabledChange() {
       // rebind to the lazy handler
       micButton.off('click');
       loadNavigatorAudioRecording();
-      
+
     }
+
   }
-  
+
   saveSettingsDebounced();
-  
+
 }
 
 function onVoiceActivationSilenceDelayChange() {
-  const value = !!$('#speech_recognition_voice_activation_silence_delay').val();
   
+  const value = $('#speech_recognition_voice_activation_silence_delay').val();
+  $('#speech_recognition_voice_activation_silence_delay_counter').val(value);
+
   extension_settings.speech_recognition.voiceActivationSilenceDelay = value;
-  
+
+  console.debug(`Set voice activation silence delay;`, {
+    voiceActivationSilenceDelay: extension_settings.speech_recognition.voiceActivationSilenceDelay
+  });
+
   saveSettingsDebounced();
+
+}
+
+function onVoiceActivationSilenceDelayCounterChange() {
+  
+  $('#speech_recognition_voice_activation_silence_delay')
+  .val($('#speech_recognition_voice_activation_silence_delay_counter').val())
+  .trigger('change');
   
 }
 
@@ -915,11 +937,27 @@ $(document).ready(function () {
                             <small>Enable activation by voice</small>
                         </label>
                     </div>
-                    <div id="speech_recognition_voice_activation_silence_delay_div" title="Allowed delay in milliseconds after the speaker stops speaking.">
-                        <label class="checkbox_label" for="speech_recognition_voice_activation_silence_delay">
-                            <input type="number" min="0" max="60000" id="speech_recognition_voice_activation_silence_delay" name="speech_recognition_voice_activation_silence_delay">
-                            <small>Enable activation by voice</small>
-                        </label>
+                    <div id="speech_recognition_voice_activation_silence_delay_div" class="range-block">
+                        <hr>
+                        <div class="range-block-title justifyLeft">
+                          <small data-i18n="Silence Delay">Silence Delay</small>
+                        </div>
+                        <div class="range-block-range-and-counter">
+                            <div class="range-block-range">
+                                <input type="range"
+                                  id="speech_recognition_voice_activation_silence_delay"
+                                  name="speech_recognition_voice_activation_silence_delay"
+                                  min="0" max="60000"
+                                  step="1.0"
+                                >
+                            </div>
+                            <div class="range-block-counter">
+                                <input type="number" min="0" max="60000" step="1.0"
+                                  data-for="speech_recognition_voice_activation_silence_delay"
+                                  id="speech_recognition_voice_activation_silence_delay_counter"
+                                >
+                            </div>
+                        </div>
                     </div>
                     <div id="speech_recognition_message_mode_div">
                         <span>Message Mode</span> </br>
@@ -956,10 +994,11 @@ $(document).ready(function () {
     $('#speech_recognition_message_mapping').on('change', onMessageMappingChange);
     $('#speech_recognition_language').on('change', onSttLanguageChange);
     $('#speech_recognition_message_mapping_enabled').on('click', onMessageMappingEnabledClick);
-    
+
     $('#speech_recognition_voice_activation_enabled').on('change', onVoiceActivationEnabledChange);
     $('#speech_recognition_voice_activation_silence_delay').on('change', onVoiceActivationSilenceDelayChange);
-    
+    $('#speech_recognition_voice_activation_silence_delay_counter').on('change', onVoiceActivationSilenceDelayCounterChange);
+
     $('#speech_recognition_ptt').on('focus', function () {
       if (this instanceof HTMLInputElement) {
         this.value = 'Enter a key combo. "Escape" to clear';
