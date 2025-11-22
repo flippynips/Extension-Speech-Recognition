@@ -259,8 +259,11 @@ function onGetUserMediaSuccess(stream) {
     
     console.debug(DEBUG_PREFIX + 'data available after MediaRecorder.stop() called: ', audioChunks.length, ' chunks');
     
+    let audioTime = (Date.now() - recordingStartTime)
+    - (extension_settings.speech_recognition.voiceActivationSilenceDelay ?? 0);
+    
     if(!extension_settings.speech_recognition.minTime
-    || Date.now() - recordingStartTime > extension_settings.speech_recognition.minTime) {
+    || audioTime > extension_settings.speech_recognition.minTime) {
       
       const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
       const arrayBuffer = await audioBlob.arrayBuffer();
@@ -279,7 +282,7 @@ function onGetUserMediaSuccess(stream) {
     } else {
       
       console.debug(DEBUG_PREFIX + 'skipping process. Audio too short.', {
-        time: Date.now() - recordingStartTime,
+        time: audioTime,
         timeMin: extension_settings.speech_recognition.minTime
       });
       
