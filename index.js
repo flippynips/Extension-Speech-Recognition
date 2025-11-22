@@ -33,11 +33,14 @@ let sttProviders = {
   Streaming: StreamingSttProvider,
 };
 
+
 let sttProvider = null;
 let sttProviderName = 'None';
 
-let isRecording = false;
-let timerVoiceActivationSilence = null;
+let min_time = false;
+let recordingStartTime = 0;
+
+let voiceActivationSilenceTimer = null;
 
 const constraints = { audio: { sampleSize: 16, channelCount: 1, sampleRate: 16000 } };
 let audioChunks = [];
@@ -210,32 +213,32 @@ function onGetUserMediaSuccess(stream) {
   const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
   const audioContext = new AudioContext(!isFirefox ? { sampleRate: 16000 } : null);
   const source = audioContext.createMediaStreamSource(stream);
-
-  const settings = {
-    source: source,
-    voice_start: function () {
-
-      if (isRecording) {
-        clearVoiceActivationSilenceTimer();
-      } else if (extension_settings.speech_recognition.voiceActivationEnabled) {
-        console.debug(DEBUG_PREFIX + 'Voice started');
-        startRecording();
-      }
-
-    },
-    voice_stop: function () {
-
-      if (isRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
-        console.debug(DEBUG_PREFIX + 'Voice stopped');
-        setVoiceActivationSilenceTimer();
-      }
-
-    },
-  };
-
+  
   // only create VAD if voice activation is ON
   if (extension_settings.speech_recognition.voiceActivationEnabled) {
-    new VAD(settings);
+    
+    new VAD({
+      source: source,
+      voice_start: function () {
+        
+        if (min_time) {
+          clearVoiceActivationSilenceTimer();
+        } else if (extension_settings.speech_recognition.voiceActivationEnabled) {
+          console.debug(DEBUG_PREFIX + 'Voice started');
+          startRecording();
+        }
+
+      },
+      voice_stop: function () {
+
+        if (min_time && extension_settings.speech_recognition.voiceActivationEnabled) {
+          console.debug(DEBUG_PREFIX + 'Voice stopped');
+          setVoiceActivationSilenceTimer();
+        }
+
+      },
+    });
+    
   }
 
   mediaRecorder = new MediaRecorder(stream);
@@ -246,28 +249,44 @@ function onGetUserMediaSuccess(stream) {
     .off('click')
     .on('click', function () {
 
-      isRecording
+      min_time
         ? stopRecording()
         : startRecording();
 
     });
 
   mediaRecorder.onstop = async function () {
+    
     console.debug(DEBUG_PREFIX + 'data available after MediaRecorder.stop() called: ', audioChunks.length, ' chunks');
-    const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
-    const arrayBuffer = await audioBlob.arrayBuffer();
-
-    // Use AudioContext to decode our array buffer into an audio buffer
-    const audioContext = new AudioContext();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    audioChunks = [];
-
-    const wavBlob = await convertAudioBufferToWavBlob(audioBuffer);
-    const transcript = await sttProvider.processAudio(wavBlob);
-
-    console.debug(DEBUG_PREFIX + 'received transcript:', transcript);
-    processTranscript(transcript);
-
+    
+    if(!extension_settings.speech_recognition.minTime
+    || Date.now() - recordingStartTime > extension_settings.speech_recognition.minTime) {
+      
+      const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      
+      // Use AudioContext to decode our array buffer into an audio buffer
+      const audioContext = new AudioContext();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      audioChunks = [];
+      
+      const wavBlob = await convertAudioBufferToWavBlob(audioBuffer);
+      const transcript = await sttProvider.processAudio(wavBlob);
+      
+      console.debug(DEBUG_PREFIX + 'received transcript:', transcript);
+      processTranscript(transcript);
+      
+    } else {
+      
+      console.debug(DEBUG_PREFIX + 'skipping process. Audio too short.', {
+        time: Date.now() - recordingStartTime,
+        timeMin: extension_settings.speech_recognition.minTime
+      });
+      
+      audioChunks = [];
+      
+    }
+    
     // If voice activation is OFF, release mic after each recording
     if (!extension_settings.speech_recognition.voiceActivationEnabled) {
       try {
@@ -278,12 +297,13 @@ function onGetUserMediaSuccess(stream) {
       mediaRecorder = null;
       micButton.off('click').on('click', micClickHandler);
     }
+    
   };
-
+  
   mediaRecorder.ondataavailable = function (e) {
     audioChunks.push(e.data);
   };
-
+  
 };
 
 function onGetUserMediaError(err) {
@@ -316,11 +336,13 @@ function loadNavigatorAudioRecording() {
     if (extension_settings.speech_recognition.voiceActivationEnabled) {
 
       navigator.mediaDevices
-        .getUserMedia(constraints)
-        .then(onGetUserMediaSuccess, onGetUserMediaError);
+      .getUserMedia(constraints)
+      .then(onGetUserMediaSuccess, onGetUserMediaError);
 
     } else {
+      
       micButton.off('click').on('click', micClickHandler);
+      
     }
 
   } else {
@@ -356,6 +378,7 @@ function loadSttProvider(provider) {
     $('#speech_recognition_message_mapping_div').hide();
     $('#speech_recognition_language_div').hide();
     $('#speech_recognition_ptt_div').hide();
+    $('#speech_recognition_min_time_div').hide();
     $('#speech_recognition_voice_activation_enabled_div').hide();
     $('#speech_recognition_voice_activation_silence_delay_div').hide();
     return;
@@ -377,35 +400,35 @@ function loadSttProvider(provider) {
     sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
     $('#microphone_button').show();
   }
-
-  const nonStreamingProviders = ['Vosk', 'OpenAI', 'Whisper (Extras)', 'Whisper (Local)', 'KoboldCpp'];
-  if (nonStreamingProviders.includes(sttProviderName)) {
+  
+  let isStreaming = sttProviderName == 'Streaming';
+  
+  if (isStreaming) {
+    sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
+    $('#microphone_button').off('click');
+    $('#microphone_button').hide();
+  } else {
     sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
     loadNavigatorAudioRecording();
     $('#microphone_button').show();
   }
 
-  if (sttProviderName == 'Streaming') {
-    sttProvider.loadSettings(extension_settings.speech_recognition[sttProviderName]);
-    $('#microphone_button').off('click');
-    $('#microphone_button').hide();
-  }
-
-  $('#speech_recognition_ptt_div').toggle(sttProviderName != 'Streaming');
-  $('#speech_recognition_voice_activation_enabled_div').toggle(sttProviderName != 'Streaming');
-
-  $('#speech_recognition_voice_activation_silence_delay_div').toggle(
-    sttProviderName != 'Streaming' && extension_settings.speech_recognition.voiceActivationEnabled
-  );
-
+  $('#speech_recognition_ptt_div').toggle(!isStreaming);
+  $('#speech_recognition_min_time_div').toggle(!isStreaming);
+  
+  $('#speech_recognition_voice_activation_enabled_div').toggle(!isStreaming);
+  
+  let isVoiceActivationEnabled = !isStreaming && extension_settings.speech_recognition.voiceActivationEnabled;
+  $('#speech_recognition_voice_activation_silence_delay_div').toggle(isVoiceActivationEnabled);
+  
 }
 
 function setVoiceActivationSilenceTimer() {
-
+  
   clearVoiceActivationSilenceTimer();
-
+  
   if (extension_settings.speech_recognition.voiceActivationSilenceDelay) {
-    timerVoiceActivationSilence = setTimeout(
+    voiceActivationSilenceTimer = setTimeout(
       () => stopRecording(),
       extension_settings.speech_recognition.voiceActivationSilenceDelay
     );
@@ -416,18 +439,18 @@ function setVoiceActivationSilenceTimer() {
 }
 
 function clearVoiceActivationSilenceTimer() {
-  if (!timerVoiceActivationSilence) return;
-  clearTimeout(timerVoiceActivationSilence);
-  timerVoiceActivationSilence = null;
+  if (!voiceActivationSilenceTimer) return;
+  clearTimeout(voiceActivationSilenceTimer);
+  voiceActivationSilenceTimer = null;
 }
 
 function startRecording() {
-
-  if (isRecording) return;
-  isRecording = true;
-
+  
+  if (min_time) return;
+  min_time = true;
+  
   const micButton = $('#microphone_button');
-
+  
   if (!mediaRecorder) {
     // go back through the same init path
     micButton.off('click');
@@ -436,24 +459,26 @@ function startRecording() {
       .then(onGetUserMediaSuccess, onGetUserMediaError);
     return;
   }
-
+  
   mediaRecorder.start();
+  recordingStartTime = Date.now();
+  
   console.debug(DEBUG_PREFIX + mediaRecorder.state);
   console.debug(DEBUG_PREFIX + 'recorder started');
   activateMicIcon(micButton);
-
+  
 }
 
 function stopRecording() {
-
-  if (!isRecording) return;
-  isRecording = false;
-
+  
+  if (!min_time) return;
+  min_time = false;
+  
   mediaRecorder.stop();
   console.debug(DEBUG_PREFIX + mediaRecorder.state);
   console.debug(DEBUG_PREFIX + 'recorder stopped');
   clearVoiceActivationSilenceTimer();
-
+  
   const micButton = $('#microphone_button');
   deactivateMicIcon(micButton);
 
@@ -523,6 +548,8 @@ const defaultSettings = {
   messageMapping: [],
   messageMappingEnabled: false,
   voiceActivationEnabled: false,
+  voiceActivationSilenceDelay: false,
+  minTime: 2000,
   /**
    * @type {KeyCombo} Push-to-talk key combo
    */
@@ -556,7 +583,15 @@ function loadSettings() {
   $('#speech_recognition_message_mapping_enabled').prop('checked', extension_settings.speech_recognition.messageMappingEnabled);
   $('#speech_recognition_ptt').val(extension_settings.speech_recognition.ptt ? formatPushToTalkKey(extension_settings.speech_recognition.ptt) : '');
   $('#speech_recognition_voice_activation_enabled').prop('checked', extension_settings.speech_recognition.voiceActivationEnabled);
-  $('#speech_recognition_voice_activation_silence_delay').val(extension_settings.speech_recognition.voiceActivationSilenceDelay ?? 0);
+  
+  let voiceActivationSilenceDelay = extension_settings.speech_recognition.voiceActivationSilenceDelay ?? 0;
+  $('#speech_recognition_voice_activation_silence_delay').val(voiceActivationSilenceDelay);
+  $('#speech_recognition_voice_activation_silence_delay_counter').val(voiceActivationSilenceDelay);
+  
+  let minTime = extension_settings.speech_recognition.minTime ?? 0;
+  $('#speech_recognition_min_time').val(minTime);
+  $('#speech_recognition_min_time_counter').val(minTime);
+  
 }
 
 async function onMessageModeChange() {
@@ -599,26 +634,48 @@ async function onMessageMappingEnabledClick() {
   saveSettingsDebounced();
 }
 
+function onMinTimeChange() {
+  
+  const value = $('#speech_recognition_min_time').val();
+  $('#speech_recognition_min_time_counter').val(value);
+  
+  extension_settings.speech_recognition.minTime = value;
+  
+  console.debug(`Set minimum audio length;`, {
+    minTime: extension_settings.speech_recognition.minTime
+  });
+  
+  saveSettingsDebounced();
+
+}
+
+function onMinTimeCounterChange() {
+  
+  $('#speech_recognition_min_time')
+  .val($('#speech_recognition_min_time_counter').val())
+  .trigger('change');
+  
+}
+
 function onVoiceActivationEnabledChange() {
   const enabled = !!$('#speech_recognition_voice_activation_enabled').prop('checked');
-
+  
   extension_settings.speech_recognition.voiceActivationEnabled = enabled;
-
-  $('#speech_recognition_voice_activation_silence_delay_div').toggle(
-    sttProviderName != 'Streaming' && extension_settings.speech_recognition.voiceActivationEnabled
-  );
-
+  
+  $('#speech_recognition_voice_activation_silence_delay_div').toggle(enabled);
+  $('#speech_recognition_min_time_div').toggle(enabled);
+  
   const micButton = $('#microphone_button');
 
   if (enabled) {
-
+    
     micButton.off('click');
     loadNavigatorAudioRecording();
-
+    
   } else {
-
-    if (!isRecording) {
-
+    
+    if (!min_time) {
+      
       if (mediaRecorder && mediaRecorder.stream) {
         try {
           mediaRecorder.stream.getTracks().forEach(t => t.stop());
@@ -627,11 +684,11 @@ function onVoiceActivationEnabledChange() {
         }
       }
       mediaRecorder = null;
-
+      
       // rebind to the lazy handler
       micButton.off('click');
       loadNavigatorAudioRecording();
-
+      
     }
 
   }
@@ -666,7 +723,7 @@ function onVoiceActivationSilenceDelayCounterChange() {
 async function convertAudioBufferToWavBlob(audioBuffer) {
   return new Promise(function (resolve) {
     var worker = new Worker('/scripts/extensions/third-party/Extension-Speech-Recognition/wave-worker.js');
-
+    
     worker.onmessage = function (e) {
       var blob = new Blob([e.data.buffer], { type: 'audio/wav' });
       resolve(blob);
@@ -681,6 +738,7 @@ async function convertAudioBufferToWavBlob(audioBuffer) {
       pcmArrays,
       config: { sampleRate: audioBuffer.sampleRate },
     });
+    
   });
 }
 
@@ -842,7 +900,7 @@ function processPushToTalkEnd(event) {
     console.debug(DEBUG_PREFIX + 'Push-to-talk key released');
 
     // If the key was held for more than 500ms and still recording, stop recording
-    if (Date.now() - lastPressTime > 500 && isRecording) {
+    if (Date.now() - lastPressTime > 500 && min_time) {
       $('#microphone_button').trigger('click');
     }
   }
@@ -931,13 +989,40 @@ $(document).ready(function () {
                         <i title="Press the designated keystroke to start the recording. Press again to stop. Only works if a browser tab is in focus." class="fa-solid fa-info-circle opacity50p"></i>
                         <input readonly type="text" id="speech_recognition_ptt" class="text_pole" placeholder="Click to set push-to-talk key">
                     </div>
+                    <div id="speech_recognition_min_time_div" class="range-block"
+                      title="Minimum number of milliseconds of audio required to submit for transcoding. This can help avoid empty responses and noise detection. Set to zero to deactivate."
+                    >
+                        <hr>
+                        <div class="range-block-title justifyLeft">
+                          <small data-i18n="Min Audio Time">Min Audio Time</small>
+                        </div>
+                        <div class="range-block-range-and-counter">
+                            <div class="range-block-range">
+                                <input type="range"
+                                  id="speech_recognition_min_time"
+                                  name="speech_recognition_min_time"
+                                  min="0" max="60000"
+                                  step="1.0"
+                                >
+                            </div>
+                            <div class="range-block-counter">
+                                <input type="number" min="0" max="60000" step="1.0"
+                                  data-for="speech_recognition_min_time"
+                                  id="speech_recognition_min_time_counter"
+                                >
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div id="speech_recognition_voice_activation_enabled_div" title="Automatically start and stop recording when you start and stop speaking.">
                         <label class="checkbox_label" for="speech_recognition_voice_activation_enabled">
                             <input type="checkbox" id="speech_recognition_voice_activation_enabled" name="speech_recognition_voice_activation_enabled">
                             <small>Enable activation by voice</small>
                         </label>
                     </div>
-                    <div id="speech_recognition_voice_activation_silence_delay_div" class="range-block">
+                    <div id="speech_recognition_voice_activation_silence_delay_div" class="range-block"
+                      title="Amount of silence after recording to submit the recording. Allows for pauses and breaths."
+                    >
                         <hr>
                         <div class="range-block-title justifyLeft">
                           <small data-i18n="Silence Delay">Silence Delay</small>
@@ -959,6 +1044,7 @@ $(document).ready(function () {
                             </div>
                         </div>
                     </div>
+                    
                     <div id="speech_recognition_message_mode_div">
                         <span>Message Mode</span> </br>
                         <select id="speech_recognition_message_mode">
@@ -994,11 +1080,14 @@ $(document).ready(function () {
     $('#speech_recognition_message_mapping').on('change', onMessageMappingChange);
     $('#speech_recognition_language').on('change', onSttLanguageChange);
     $('#speech_recognition_message_mapping_enabled').on('click', onMessageMappingEnabledClick);
-
+    
+    $('#speech_recognition_min_time').on('change', onMinTimeChange);
+    $('#speech_recognition_min_time_counter').on('change', onMinTimeCounterChange);
+    
     $('#speech_recognition_voice_activation_enabled').on('change', onVoiceActivationEnabledChange);
     $('#speech_recognition_voice_activation_silence_delay').on('change', onVoiceActivationSilenceDelayChange);
     $('#speech_recognition_voice_activation_silence_delay_counter').on('change', onVoiceActivationSilenceDelayCounterChange);
-
+    
     $('#speech_recognition_ptt').on('focus', function () {
       if (this instanceof HTMLInputElement) {
         this.value = 'Enter a key combo. "Escape" to clear';
