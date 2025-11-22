@@ -4,6 +4,10 @@ Convert your speech to text using a browser or extras.
 
 Documentation: <https://docs.sillytavern.app/extensions/speech-recognition/>
 
+## This Fork Changes
+- Added silence delay option for voice activation
+- Cleaned up code a bit 
+
 ## License and credits
 
 GPLv3

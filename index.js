@@ -36,8 +36,8 @@ let sttProviders = {
 let sttProvider = null;
 let sttProviderName = 'None';
 
-let audioRecording = false;
-let audioTimerSilence = null;
+let isRecording = false;
+let timerVoiceActivationSilence = null;
 
 const constraints = { audio: { sampleSize: 16, channelCount: 1, sampleRate: 16000 } };
 let audioChunks = [];
@@ -215,7 +215,7 @@ function onGetUserMediaSuccess(stream) {
     source: source,
     voice_start: function () {
       
-      if(audioRecording) {
+      if(isRecording) {
         clearVoiceActivationSilenceTimer();
       } else if (extension_settings.speech_recognition.voiceActivationEnabled) {
         console.debug(DEBUG_PREFIX + 'Voice started');
@@ -225,7 +225,7 @@ function onGetUserMediaSuccess(stream) {
     },
     voice_stop: function () {
       
-      if (audioRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
+      if (isRecording && extension_settings.speech_recognition.voiceActivationEnabled) {
         console.debug(DEBUG_PREFIX + 'Voice stopped');
         setVoiceActivationSilenceTimer();
       }
@@ -239,12 +239,14 @@ function onGetUserMediaSuccess(stream) {
   }
 
   mediaRecorder = new MediaRecorder(stream);
-
+  
+  const micButton = $('#microphone_button');
+  
   micButton
   .off('click')
   .on('click', function () {
     
-    audioRecording
+    isRecording
     ? stopRecording()
     : startRecording();
     
@@ -403,7 +405,7 @@ function setVoiceActivationSilenceTimer() {
   clearVoiceActivationSilenceTimer();
   
   if(extension_settings.speech_recognition.voiceActivationSilenceDelay) {
-    audioTimerSilence = setTimeout(
+    timerVoiceActivationSilence = setTimeout(
       () => stopRecording(),
       extension_settings.speech_recognition.voiceActivationSilenceDelay
     );
@@ -414,15 +416,15 @@ function setVoiceActivationSilenceTimer() {
 }
 
 function clearVoiceActivationSilenceTimer() {
-  if(!audioTimerSilence) return;
-  clearTimeout(audioTimerSilence);
-  audioTimerSilence = null;
+  if(!timerVoiceActivationSilence) return;
+  clearTimeout(timerVoiceActivationSilence);
+  timerVoiceActivationSilence = null;
 }
 
 function startRecording() {
   
-  if(audioRecording) return;
-  audioRecording = true;
+  if(isRecording) return;
+  isRecording = true;
   
   const micButton = $('#microphone_button');
   
@@ -444,8 +446,8 @@ function startRecording() {
 
 function stopRecording() {
   
-  if(!audioRecording) return;
-  audioRecording = false;
+  if(!isRecording) return;
+  isRecording = false;
   
   mediaRecorder.stop();
   console.debug(DEBUG_PREFIX + mediaRecorder.state);
@@ -608,7 +610,7 @@ function onVoiceActivationEnabledChange() {
     micButton.off('click');
     loadNavigatorAudioRecording();
   } else {
-    if(!audioRecording) {
+    if(!isRecording) {
       
       if (mediaRecorder && mediaRecorder.stream) {
         try {
@@ -818,7 +820,7 @@ function processPushToTalkEnd(event) {
     console.debug(DEBUG_PREFIX + 'Push-to-talk key released');
 
     // If the key was held for more than 500ms and still recording, stop recording
-    if (Date.now() - lastPressTime > 500 && audioRecording) {
+    if (Date.now() - lastPressTime > 500 && isRecording) {
       $('#microphone_button').trigger('click');
     }
   }
