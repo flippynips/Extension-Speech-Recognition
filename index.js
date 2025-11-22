@@ -548,7 +548,7 @@ const defaultSettings = {
   messageMapping: [],
   messageMappingEnabled: false,
   voiceActivationEnabled: false,
-  voiceActivationSilenceDelay: false,
+  voiceActivationSilenceDelay: 1500,
   minTime: 2000,
   /**
    * @type {KeyCombo} Push-to-talk key combo
